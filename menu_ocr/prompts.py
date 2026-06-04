@@ -1,96 +1,112 @@
 """LLM prompts for the 2-call FC-first pipeline.
 
 Architecture:
-  Call 1 (FC_SCAN_PROMPT)   → submit_food_conditions  → canonical modifier list
-  Call 2 (MENU_BUILD_PROMPT) → submit_menu_groups     → groups[] referencing FCs
+  Call 1 (FC_SCAN_PROMPT)   → submit_food_conditions  → BEILAGE modifier list only
+  Call 2 (MENU_BUILD_PROMPT) → submit_menu_groups     → groups[] with CHOOSE + sub-foods
 
 English so the system works across menu languages.
-Numeric type/kind IDs and the FoodCondition/OptionGroup data model are baked
-into the prompts to match the CMS schema 1-to-1.
+Aligned with hq-qrcode-admin Food model — see schemas.py docstring for full spec.
 """
 
 # ============================================================
-# Call 1 — enumerate every unique modifier
+# Call 1 — enumerate every unique BEILAGE-MODIFIER item
+# (CHOOSE sub-food names are NOT modifiers — do not list them here)
 # ============================================================
 FC_SCAN_PROMPT = """You are a menu OCR system, STEP 1 of 2.
 
-Your ONLY job in this step: enumerate every UNIQUE modifier item printed
-anywhere on the menu image(s). The output of this step becomes the canonical
-WHITELIST for step 2 (which will build the actual menu structure).
+Your ONLY job in this step: enumerate every UNIQUE BEILAGE-MODIFIER item printed
+anywhere on the menu image(s). The output becomes the WHITELIST for step 2.
 
 A wrong price = real money lost. If anything is unreadable, refuse.
 
 ============================================================
-WHAT COUNTS AS A MODIFIER
+WHAT COUNTS AS A BEILAGE MODIFIER (DO list)
 ============================================================
-A modifier is any CHOICE the customer can add to / pick for a dish:
+A beilage modifier is a small CHOICE customer can add to / configure on a dish:
 
-  • SIZE variants    — "Size M", "Size L", "200g", "Black Angus 200g"
-  • TOPPING add-ons  — "Trân châu", "Pudding", "Phô mai", "Bacon", "Thêm trứng"
-  • PROTEIN swaps    — "Tofu", "Huhn", "Lachs", "Rind", "Garnelen", "Bò"
-  • SAUCE / STYLE    — "Spicy", "Mild", "Sốt cà", "Sốt tiêu", "Tái", "Nạm", "Gân"
-  • DRINK in combos  — "Coca", "Sprite", "Trà đá"
+  • SIZE variants            — "Size M", "Size L", "200g", "Black Angus 200g"
+  • TOPPING add-ons          — "Trân châu", "Pudding", "Phô mai", "Bacon", "Thêm trứng"
+  • SAUCE / STYLE            — "Spicy", "Mild", "Sốt cà", "Sốt tiêu"
+  • REQUIRED protein choice  — "Tái", "Nạm", "Gân" (when ALL same price under one base dish)
 
-WHAT IS NOT A MODIFIER (do NOT include):
+The defining characteristic: the PARENT DISH HAS A PRINTED BASE PRICE, and the
+modifier is an ADJUSTMENT to that dish (added cost, swap, configuration).
+
+============================================================
+WHAT IS NOT A MODIFIER (do NOT list)
+============================================================
   • Base dish names — "Phở bò tái", "Hamburger", "Trà sữa", "Pizza Margherita"
-  • Section headers — "Drinks", "Mains", "Starters"
-  • Combo names     — "Combo 2 người" (the combo itself is a food, not a modifier)
+  • Section headers — "Drinks", "Mains", "Starters", "Finger Food"
+  • CHOOSE sub-food names — when a parent header has NO printed price next to it
+    and indented children each have THEIR OWN price, those children are NOT
+    modifiers. They are full Foods (CHOOSE sub-foods). DO NOT list them here.
+
+EXAMPLES of patterns where children are CHOOSE sub-foods (DO NOT list):
+
+  Pattern A — Hanoi Summer style:
+    Hanoi Summer (2 Stk.)              ← parent header, NO price
+    Reisnudelsalat, Kräuter…           ← description
+        Tofu             5,20          ← sub-food (variant), has own price
+        Huhn             5,20
+        Garnelen         5,90
+        Ebi Tempura      6,20
+        Frittierter Lachs 6,20
+    → Tofu / Huhn / Garnelen / Ebi Tempura / Frittierter Lachs are CHOOSE sub-foods.
+    → DO NOT list any of these in food_conditions[].
+
+  Pattern B — PHO style:
+    PHO                                ← parent header, NO price
+    Brühe, Reisbandnudeln, Kräuter
+        Veggie       12,90             ← sub-food
+        Tofu         12,90
+        Rind         14,50
+        Huhn         13,90
+        Fleisch-Mix  15,90
+    → Veggie / Tofu / Rind / Huhn / Fleisch-Mix are CHOOSE sub-foods.
+    → DO NOT list any in food_conditions[].
+
+EXAMPLES of patterns where children ARE modifiers (DO list):
+
+  Pattern C — same-price required choice (parent HAS price):
+    Phở (tái / nạm / gân) — 70k        ← parent has price 70k
+    → DO list: "Tái" (base_price 0), "Nạm" (0), "Gân" (0).
+
+  Pattern D — Size with base price visible:
+    Trà sữa  S 40k | M 50k | L 60k     ← base = S 40k
+    → DO list: "Size M" (base_price 10), "Size L" (base_price 20).
+
+  Pattern E — Explicit add-ons:
+    Phở bò 70k. Thêm trứng +5k, thêm hành +3k
+    → DO list: "Trứng" (5), "Hành" (3).
 
 ============================================================
-DETECTION PATTERNS
+THE DECISION RULE (memorize this)
 ============================================================
-You will mostly find modifiers in these layouts:
-
-PATTERN 1 — variant choice under a dish header (no price on header line):
-    Miso Suppe
-        Tofu     4,90      ← "Tofu" is a modifier
-        Lachs    5,50      ← "Lachs" is a modifier
-        Huhn     5,20      ← "Huhn" is a modifier
-  → Add each variant once. base_price = the most common price you see for it.
-
-PATTERN 2 — size column in a table:
-                   100g    200g    Black Angus 200g
-    Hamburger      3.70    5.00    6.50
-    Cheeseburger   4.10    5.40    6.90
-  → Modifiers: "200g", "Black Angus 200g".
-    "100g" is the BASE size (smallest column) — do NOT add it as modifier.
-
-PATTERN 3 — explicit "+price" addons:
-    Pho bo 70k. Thêm trứng +5k, thêm hành +3k
-  → Modifiers: "Trứng" (or "Thêm trứng"), "Hành" (or "Thêm hành").
-
-PATTERN 4 — listed toppings:
-    Topping: Trân châu 5k, Thạch 5k, Pudding 8k
-  → Modifiers: "Trân châu", "Thạch", "Pudding".
-
-PATTERN 5 — required choice with same price:
-    Phở (tái / nạm / gân) — 70k     ← all variants same price
-  → Modifiers: "Tái", "Nạm", "Gân". base_price = 0 (no extra charge).
+For variants/children under a header:
+  ⚠️ Header HAS a printed price → children are BEILAGE modifiers → LIST THEM.
+  ⚠️ Header HAS NO printed price → children are CHOOSE sub-foods → DO NOT LIST.
 
 ============================================================
 RULES
 ============================================================
-1. DEDUPLICATE by name (case-insensitive). If "Trân châu" appears on 10 drinks,
-   list it ONCE in your output.
+1. DEDUPLICATE by name (case-insensitive). 'Trân châu' on 10 drinks = ONE entry.
 2. NORMALIZE casing — pick the spelling printed on the menu and stick to it.
    Step 2 must reference the EXACT name you list here.
 3. base_price = the most-common / canonical price for this modifier across
    the menu. Step 2 will still record per-food prices separately.
-4. If a modifier's price differs everywhere it appears, use the MOST COMMON
-   one (or the first occurrence). Don't average.
+4. If a modifier's price differs everywhere it appears, use the MOST COMMON one.
 5. plu = the printed PLU/SKU code if any; null otherwise. Do not guess.
 6. status = 1 (active) by default.
-7. EMPTY list is valid if the menu genuinely has no modifiers.
-8. NO INVENTING — if you cannot read a modifier's price, skip that modifier
-   (better to under-list than poison the whitelist with wrong prices).
-9. If the IMAGE itself is unreadable (blurry / dark / skewed / cut off) →
-   call `report_unreadable` instead of `submit_food_conditions`.
+7. EMPTY list is valid if the menu has no beilage modifiers (common when the
+   menu is mostly CHOOSE parents with sub-foods).
+8. NO INVENTING — if you cannot read a modifier's price, skip that modifier.
+9. If the IMAGE itself is unreadable → call `report_unreadable` instead.
 
 ============================================================
 DELIVERABLE
 ============================================================
-Call `submit_food_conditions` with the deduplicated list. No prose.
-Be thorough — anything you miss here cannot be added back in step 2.
+Call `submit_food_conditions` with the deduplicated modifier list. No prose.
+Be thorough on modifiers — anything missed here cannot be added in step 2.
 """
 
 
@@ -99,12 +115,12 @@ Be thorough — anything you miss here cannot be added back in step 2.
 # ============================================================
 # Replace the literal sentinel `__FC_LIST_JSON__` with the actual whitelist JSON
 # at call time. Using replace() (not str.format) avoids needing to escape every
-# `{` and `}` that appears in JSON examples throughout this prompt.
+# `{` and `}` in the JSON examples below.
 MENU_BUILD_PROMPT = """You are a menu OCR system, STEP 2 of 2.
 
-Step 1 already enumerated every unique modifier on this menu. The canonical
-WHITELIST is given below as `food_conditions`. Your job now: build the menu
-`groups[]` structure, referencing modifiers BY NAME from the whitelist.
+Step 1 already enumerated every unique BEILAGE-MODIFIER on this menu. The
+canonical WHITELIST is given below as `food_conditions`. Your job now: build
+the menu `groups[]` structure.
 
 A wrong price means real money lost. Be maximally cautious.
 
@@ -117,12 +133,9 @@ __FC_LIST_JSON__
 `food.options[].food_datas[]` MUST appear in the whitelist above
 (case-insensitive name match). Names you invent here will be rejected.
 
-If you genuinely see a modifier that's not in the whitelist:
-  - It probably WAS missed in step 1.
-  - You should still call `submit_menu_groups` with that food but OMIT the
-    missing modifier from its options[]. Don't fabricate an FC entry here.
-  - Per-food `food_data.price` MAY differ from the whitelist `base_price` —
-    that's the whole point of per-food price snapshots.
+NOTE: CHOOSE sub-food names (Tofu / Huhn / Garnelen when they are full dishes
+under a no-price parent) are NOT in the whitelist by design. They are emitted
+inside `food.foods[]` as full sub-Food records, not as modifier references.
 
 ============================================================
 NON-NEGOTIABLE RULES
@@ -136,76 +149,122 @@ NON-NEGOTIABLE RULES
    - ANY price digit in doubt → prefer `report_unreadable`.
 
 ============================================================
-DATA MODEL (mirrors the CMS API 1-to-1)
+DATA MODEL (mirrors the CMS Food/foodCondition API 1-to-1)
 ============================================================
-__DATA_MODEL_SECTION__
+(1) groups[]  — sections of the menu (Starters, Mains, Drinks, ...).
+(2) food      — one row on the menu.
+    Fields: { name, plu?, type, kind, price_in, price_out, options[], foods? }
+    `foods` is REQUIRED when kind=5 (CHOOSE) and each child is a full Food.
+    `foods` is forbidden when kind=1 (COMMON).
+(3) options[] (= beilages in CMS) — modifier groups attached to a food.
+    Each group:    { name, type, option, food_datas[] }
+    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }
+(4) CHOOSE sub-food — a Food inside a CHOOSE parent's foods[]. Always kind=1
+    with own price; may have own options[]. NO nesting (sub-foods can't be kind=5).
 
 ============================================================
-KIND CLASSIFICATION — CRITICAL
+KIND CLASSIFICATION — THE CORE DECISION
 ============================================================
-__KIND_SECTION__
+kind=1 (COMMON) — DEFAULT for almost every menu item.
+  Use kind=1 for:
+  • Standalone dishes with one printed price.
+  • Dishes with SIZE variants where parent has a base price.
+  • Dishes with TOPPING options.
+  • Dishes with required SAME-PRICE choice (Phở tái/nạm/gân — all 70k).
+  COMMON REQUIRES price_in and price_out.
+  COMMON MUST have foods = null.
+
+kind=5 (CHOOSE) — when the parent header has NO printed price.
+  A CHOOSE parent groups 2+ (occasionally 1) variant sub-foods, each of which
+  is a real dish with its own price. The parent itself is just a header.
+  CHOOSE REQUIRES foods[] with ≥1 sub-food. Each sub-food is kind=1 with own
+  price_in/price_out. Sub-foods MAY have their own beilages (options[]).
+  CHOOSE MUST have price_in = null and price_out = null.
+  ⚠️ NO NESTING. CHOOSE sub-foods are always kind=1, never kind=5.
 
 ============================================================
-⚠️ FREQUENT MISTAKE — indented variants must NOT become separate foods
+⭐ THE DECISION RULE FOR INDENTED VARIANTS (READ TWICE)
 ============================================================
-LAYOUT TRIGGER:
-  - A dish name on its OWN line WITHOUT a price next to it
-  - Followed by 2+ INDENTED sub-lines, each carrying its own price
+When you see a header with indented price-bearing children below it:
 
-UNIVERSAL OUTPUT:
-  - ONE food, NOT N foods
-  - food.name = parent header text (NEVER concatenate variant name)
-  - food.price_in = food.price_out = 0
-  - food.kind = 1
-  - option group:
-      type = 0 (single_choice)
-      option = 1 (required — parent has no price, must pick)
-      food_datas[] = one entry per variant with its ABSOLUTE printed price
-  - Each variant's name_food = JUST the variant word ("Tofu", "Lachs", "200g")
+  ⚠️ Header HAS a printed price next to the name      → kind=1 + beilage
+  ⚠️ Header HAS NO printed price next to the name     → kind=5 (CHOOSE) + sub-foods
 
-EXAMPLES:
+This is the SINGLE rule for distinguishing CHOOSE from beilage. Use it.
 
-  Menu prints:                         →  ONE food:
+============================================================
+EXAMPLES — CHOOSE parent + sub-foods (header NO price)
+============================================================
+
+  Menu prints:                         →  ONE CHOOSE Food:
   ─────────────────────────────────       ──────────────────────────────────────
-  Miso Suppe                              name = "Miso Suppe"
-      Tofu    4,90                        price_in = 0
-      Lachs   5,50                        options = [Tofu:4.90, Lachs:5.50]
+  Hanoi Summer (2 Stk.)                   name = "Hanoi Summer (2 Stk.)"
+  Reisnudelsalat, Kräuter,                kind = 5
+  Limetten-Dressing                       price_in = null, price_out = null
+      Tofu             5,20               description = "Reisnudelsalat, …"
+      Huhn             5,20               foods = [
+      Garnelen         5,90                 {name:"Tofu",        kind:1, type:2, price_in:5.20, price_out:5.20},
+      Ebi Tempura      6,20                 {name:"Huhn",        kind:1, type:2, price_in:5.20, price_out:5.20},
+      Frittierter Lachs 6,20                {name:"Garnelen",    kind:1, type:2, price_in:5.90, price_out:5.90},
+                                            {name:"Ebi Tempura", kind:1, type:2, price_in:6.20, price_out:6.20},
+                                            {name:"Frittierter Lachs", kind:1, type:2, price_in:6.20, price_out:6.20},
+                                          ]
+                                          options = []   ← parent itself has no beilage here
 
-  Glasnudelnsalat                         name = "Glasnudelnsalat"
-      Tofu     7,20                       price_in = 0
-      Huhn     7,50                       options = [Tofu:7.20, Huhn:7.50,
-      Rind     7,90                                  Rind:7.90, Garnelen:7.90]
-      Garnelen 7,90
+  PHO                                     name = "PHO"
+  Brühe, Reisbandnudeln, Kräuter          kind = 5
+      Veggie       12,90                  price_in = null
+      Tofu         12,90                  foods = [
+      Rind         14,50                    {name:"Veggie",      kind:1, type:2, price_in:12.90, price_out:12.90},
+      Huhn         13,90                    {name:"Tofu",        kind:1, type:2, price_in:12.90, price_out:12.90},
+      Fleisch-Mix  15,90                    {name:"Rind",        kind:1, type:2, price_in:14.50, price_out:14.50},
+                                            {name:"Huhn",        kind:1, type:2, price_in:13.90, price_out:13.90},
+                                            {name:"Fleisch-Mix", kind:1, type:2, price_in:15.90, price_out:15.90},
+                                          ]
 
-❌ WRONG — DO NOT do this:
-  {"name": "Miso Suppe Tofu",       "price_in": 4.90, ...}
-  {"name": "Glasnudelnsalat Rind",  "price_in": 7.90, ...}
+❌ WRONG for the above patterns — DO NOT do this:
+  Single kind=1 food "Hanoi Summer" with options=[Tofu:5.20, Huhn:5.20, …]
+  Single kind=1 food "PHO" with options=[Veggie:12.90, …]
+  N separate foods like "Hanoi Summer Tofu", "PHO Veggie", "PHO Huhn", …
 
 ============================================================
-OPTION PATTERNS
+EXAMPLES — kind=1 + beilage (header HAS price)
 ============================================================
-SIZE (single dish, multiple sizes):
+
+PATTERN: SIZE — header has base price
   Trà sữa  S 40k | M 50k | L 60k
-  → kind=1, price_in = price_out = 40
-  → option: name="Size", type=0, option=0
-    food_datas = [{name_food: "Size M", price: 10}, {name_food: "Size L", price: 20}]
+  → name="Trà sữa", kind=1, price_in=price_out=40 (base = S, smallest size)
+    options=[{
+      name:"Size", type:0, option:0,
+      food_datas=[
+        {name_food:"Size M", price:10},   ← only LARGER sizes, NOT the base
+        {name_food:"Size L", price:20},
+      ]
+    }]
 
-SIZE TABLE (many dishes sharing size columns):
-  → Each row = one food, price = smallest column
-  → Per-row option food_datas with per-row price differences
+PATTERN: TOPPING — header has price (multi-select add-on)
+  Trà sữa 40k + Topping: Trân châu +5k, Thạch +5k, Pudding +8k
+  → name="Trà sữa", kind=1, price_in=40
+    options=[{
+      name:"Topping", type:1, option:0,
+      food_datas=[
+        {name_food:"Trân châu", price:5},
+        {name_food:"Thạch",     price:5},
+        {name_food:"Pudding",   price:8},
+      ]
+    }]
 
-TOPPING (multi-select add-ons):
-  Trân châu +5k, Thạch +5k, Pudding +8k
-  → option: name="Topping", type=1, option=0
-    food_datas = [{name_food: "Trân châu", price: 5}, ...]
-
-REQUIRED CHOICE (same price):
+PATTERN: REQUIRED SAME-PRICE CHOICE — header has price
   Phở (tái / nạm / gân) — 70k
-  → kind=1, price_in = price_out = 70
-  → option: name="Loại thịt", type=0, option=1
-    food_datas = [{name_food: "Tái", price: 0}, ...]
-
-__COMBO_SECTION__
+  → name="Phở", kind=1, price_in=70
+    options=[{
+      name:"Loại thịt", type:0, option:1,
+      food_datas=[
+        {name_food:"Tái", price:0},
+        {name_food:"Nạm", price:0},
+        {name_food:"Gân", price:0},
+      ]
+    }]
 
 ============================================================
 TYPE CLASSIFICATION
@@ -216,13 +275,15 @@ type=2 (FOOD) : everything edible.
 
 Heuristic: section "Drinks / Beverages / Bar / Coffee / Tea / Cocktail / Wine
 list / Soft drinks / Juice / Smoothies" → items default to type=1.
+For CHOOSE sub-foods, usually copy the parent's type.
 
 ============================================================
 PRICE FORMAT
 ============================================================
 - Raw numbers only, NO currency symbol.
-  70.000đ → 70000      $12 → 12      €4.50 → 4.5
+  70.000đ → 70000      $12 → 12      €4.50 → 4.5      5,20 → 5.20
 - If the menu prints only one price, COPY it into both price_in and price_out.
+- German/EU menus use comma as decimal: "5,20" → 5.20 (NOT 520).
 
 ============================================================
 QUALITY BAR
@@ -230,108 +291,6 @@ QUALITY BAR
 - Better to drop a few items than to submit one wrong price.
 - Preserve original language and casing of names — do not translate.
 - Output strictly through the `submit_menu_groups` tool. No prose."""
-
-
-# ============================================================
-# Combo-section variants (substituted into MENU_BUILD_PROMPT at runtime)
-# ============================================================
-_DATA_MODEL_WITH_COMBOS = """\
-(1) groups[]  — sections of the menu (Starters, Main, Drinks, ...).
-(2) food      — one row on the menu.
-    Fields: { name, plu?, type, kind, price_in, price_out, options[], foods? }
-    `foods` is ONLY present when kind=5 (combo); each child is kind=1.
-(3) options[] — modifier groups attached to a food.
-    Each group: { name, type, option, food_datas[] }
-    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }"""
-
-_DATA_MODEL_NO_COMBOS = """\
-(1) groups[]  — sections of the menu (Starters, Main, Drinks, ...).
-(2) food      — one row on the menu. COMBO EXTRACTION IS DISABLED — kind is always 1.
-    Fields: { name, plu?, type, kind (always 1), price_in, price_out, options[] }
-(3) options[] — modifier groups attached to a food.
-    Each group: { name, type, option, food_datas[] }
-    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }"""
-
-_KIND_WITH_COMBOS = """\
-kind=1 (COMMON) — DEFAULT for almost every menu item.
-  Use kind=1 for:
-  • Standalone dishes with one price.
-  • Dishes with SIZE variants — base = smallest size, larger sizes in a `Size` option group.
-  • Dishes with TOPPING options — toppings in a `Topping` option group.
-  • Dishes with required CHOICE of one variant — choices in an option group (type=0, option=1).
-  COMMON REQUIRES price_in and price_out.
-  COMMON MUST have foods = null.
-
-kind=5 (COMBO) — ONLY for COMBO BUNDLES.
-  Combo = single purchase delivering 2+ DIFFERENT named items.
-  COMBO REQUIRES foods[] with ≥2 children. Each child is kind=1.
-  COMBO MUST have price_in = null and price_out = null.
-  COMBO MAY have options (rare).
-  ⚠️ NO COMBO-INSIDE-COMBO. Combo children are always kind=1, never kind=5.
-
-When in doubt → kind=1."""
-
-_KIND_NO_COMBOS = """\
-kind=1 (COMMON) — THIS RUN ONLY EXTRACTS kind=1 ITEMS.
-  Use kind=1 for:
-  • Standalone dishes with one price.
-  • Dishes with SIZE variants — base = smallest size, larger sizes in a `Size` option group.
-  • Dishes with TOPPING options — toppings in a `Topping` option group.
-  • Dishes with required CHOICE of one variant — choices in an option group (type=0, option=1).
-  COMMON REQUIRES price_in and price_out.
-
-⚠️ COMBO EXTRACTION IS DISABLED IN THIS RUN.
-  If you see a combo bundle on the menu — anything labeled "combo / set / pack /
-  menu / deal / bundle", "Combo X người", or "2+ named items for one price" —
-  SKIP IT ENTIRELY. Do NOT add the combo as a food. Do NOT add its component
-  dishes as separate foods either (unless those components ALSO appear as
-  standalone dishes elsewhere on the same menu — then extract them at their
-  standalone price, not the combo-component price)."""
-
-_COMBO_SECTION_WITH = """\
-============================================================
-COMBO BUNDLE — kind=5
-============================================================
-Triggers: "combo / set / pack / menu / deal / bundle",
-          numeric + people ("Combo 2 người"),
-          one price covering 2+ named items joined by "+" or ",".
-
-For combo bundles:
-- Set price_in = null and price_out = null.
-- Populate foods[] with each component (≥2 entries):
-    { name, type, kind: 1, price_in, price_out, options? }
-- Every child is kind=1. NEVER nest combos.
-- If menu shows individual component prices → use them.
-- If menu shows ONLY combo total → SPLIT EQUALLY across components."""
-
-_COMBO_SECTION_WITHOUT = """\
-============================================================
-COMBO EXTRACTION: DISABLED
-============================================================
-This run is configured to IGNORE combo bundles. Apply this rule:
-
-If you see ANY of these on the menu, SKIP the item — do not add to groups[]:
-  • Item labeled "Combo", "Set", "Pack", "Deal", "Bundle", "Menu" (combo menu)
-  • "Combo N người" / "Set Menu"
-  • One price covering 2+ named items joined by "+" or ","
-  • "2 dishes + 1 drink = 250k" type bundles
-
-Only extract STANDALONE dishes (kind=1) and dishes with options (size/topping/etc).
-Better to under-extract than to wrongly include a combo as a regular dish."""
-
-
-def build_menu_prompt(extract_combos: bool) -> str:
-    """Return MENU_BUILD_PROMPT with combo-related sections substituted in/out.
-    Call this each run with the user's toggle state."""
-    data_model = _DATA_MODEL_WITH_COMBOS if extract_combos else _DATA_MODEL_NO_COMBOS
-    kind = _KIND_WITH_COMBOS if extract_combos else _KIND_NO_COMBOS
-    combo = _COMBO_SECTION_WITH if extract_combos else _COMBO_SECTION_WITHOUT
-    return (
-        MENU_BUILD_PROMPT
-        .replace("__DATA_MODEL_SECTION__", data_model)
-        .replace("__KIND_SECTION__", kind)
-        .replace("__COMBO_SECTION__", combo)
-    )
 
 
 # ============================================================

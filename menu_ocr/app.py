@@ -41,7 +41,6 @@ from menu_ocr.config import (
     BLUR_BLOCK_THRESHOLD,
     BLUR_WARN_THRESHOLD,
     CLAUDE_MODELS_FALLBACK,
-    EXTRACT_COMBOS_DEFAULT,
     KIND_CHOOSE,
     KIND_LABELS,
     OPENAI_MODELS_FALLBACK,
@@ -100,12 +99,7 @@ def encode_b64(png_bytes: bytes) -> str:
 
 
 from menu_ocr.pricing import compute_cost
-from menu_ocr.prompts import (
-    FC_SCAN_PROMPT,
-    MENU_BUILD_PROMPT,
-    TEXT_PDF_PROMPT_PREFIX,
-    build_menu_prompt,
-)
+from menu_ocr.prompts import FC_SCAN_PROMPT, MENU_BUILD_PROMPT, TEXT_PDF_PROMPT_PREFIX
 from menu_ocr.scoring import score_against_truth
 from menu_ocr.validation import (
     count_menu,
@@ -327,18 +321,6 @@ def main():
         blur_check_on = st.checkbox("Cảnh báo ảnh mờ trước khi gọi API", value=True)
 
         st.divider()
-        st.header("🍱 Phạm vi trích xuất")
-        extract_combos = st.checkbox(
-            "Lấy combo (kind=5)",
-            value=EXTRACT_COMBOS_DEFAULT,
-            help=("TẮT: bỏ qua mọi combo bundle trên menu, chỉ lấy món thường. "
-                  "BẬT: trích combo đầy đủ với foods[] children. Default OFF — "
-                  "combo phức tạp, chỉ bật khi đã sẵn sàng xử lý."),
-        )
-        if not extract_combos:
-            st.caption("⚠️ Combo bundle sẽ bị BỎ QUA hoàn toàn.")
-
-        st.divider()
         if st.button("🗑️ Xóa lịch sử so sánh", use_container_width=True):
             st.session_state.pop("history", None)
             st.rerun()
@@ -426,15 +408,9 @@ def main():
         prompt_fc = st.text_area(
             "Bước 1 — FC scan prompt", value=FC_SCAN_PROMPT, height=240,
         )
-        # build_menu_prompt() resolves __KIND_SECTION__/__COMBO_SECTION__/
-        # __DATA_MODEL_SECTION__ based on the combo toggle BEFORE showing the
-        # editable text so the user sees exactly what the model will see.
-        default_menu_prompt = build_menu_prompt(extract_combos)
         prompt_menu = st.text_area(
-            f"Bước 2 — Menu build prompt (`__FC_LIST_JSON__` sentinel · "
-            f"combo: {'BẬT' if extract_combos else 'TẮT'})",
-            value=default_menu_prompt, height=240,
-            key=f"prompt_menu_combo_{extract_combos}",   # reset textarea when toggle flips
+            "Bước 2 — Menu build prompt (`__FC_LIST_JSON__` sentinel)",
+            value=MENU_BUILD_PROMPT, height=240,
         )
 
     # ========================================================
@@ -467,7 +443,6 @@ def main():
             max_tokens_fc=max_tokens_fc, max_tokens_menu=max_tokens_menu,
             cache_prompt=cache_prompt,
             blur_level=blur_level, worst_bs=worst_bs,
-            extract_combos=extract_combos,
         )
 
     # ========================================================
@@ -544,8 +519,7 @@ def _run_pipeline(*, provider_key, api_key_input,
                   prompt_fc, prompt_menu,
                   images_b64, source_kind, text_per_page,
                   max_tokens_fc, max_tokens_menu, cache_prompt,
-                  blur_level, worst_bs,
-                  extract_combos):
+                  blur_level, worst_bs):
     if provider_key == "claude":
         client, err = get_client(api_key_input)
     else:
@@ -647,7 +621,6 @@ def _run_pipeline(*, provider_key, api_key_input,
             image_b64_list=[images_b64[page_idx]],   # ONLY this page
             max_tokens=max_tokens_menu,
             cache_prompt=cache_prompt,
-            extract_combos=extract_combos,
         )
         print(f"[{datetime.now():%H:%M:%S}] ← menu build page {page_idx+1}/{n_pages} "
               f"in {r['sec']:.1f}s · tool={r['tool_name']} · err={r['error']}",
@@ -760,7 +733,6 @@ def _run_pipeline(*, provider_key, api_key_input,
         "sec":         r1["sec"] + menu_sec_total,
         "n_pages":     n_pages,
         "source_kind": source_kind,
-        "extract_combos": extract_combos,
         "time":        datetime.now().strftime("%H:%M:%S"),
     })
 
@@ -907,9 +879,7 @@ def _render_results(truth_items):
         return
 
     raw_menu = merge_fc_and_groups(fc_list, last.get("menu_tool_input") or {})
-    # Default True if missing (legacy history entries from before the toggle).
-    extract_combos_used = last.get("extract_combos", True)
-    valid_menu, errors = validate_menu(raw_menu, extract_combos=extract_combos_used)
+    valid_menu, errors = validate_menu(raw_menu)
     counts_raw   = count_menu(raw_menu)
     counts_valid = count_menu(valid_menu)
 
@@ -937,7 +907,7 @@ def _render_results(truth_items):
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Groups",     counts_valid["groups"],          f"raw {counts_raw['groups']}")
     c2.metric("Foods",      counts_valid["foods"],           f"raw {counts_raw['foods']}")
-    c3.metric("Combos",     counts_valid["combos"],          f"items {counts_valid['combo_items']}")
+    c3.metric("Choose",     counts_valid["choose_kinds"],    f"subs {counts_valid['sub_foods']}")
     c4.metric("FoodConds",  counts_valid["food_conditions"], f"raw {counts_raw['food_conditions']}")
     c5.metric("Options",    counts_valid["option_groups"],   f"links {counts_valid['option_links']}")
     c6.metric("Errors",     len(errors))
@@ -993,11 +963,11 @@ def _render_results(truth_items):
             for f in g.get("foods", []):
                 type_lbl = TYPE_LABELS.get(f.get("type"), "?")
                 kind_lbl = KIND_LABELS.get(f.get("kind"), "?")
-                is_combo = f.get("kind") == KIND_CHOOSE
-                icon = "🔀" if is_combo else "🍽"
+                is_choose = f.get("kind") == KIND_CHOOSE
+                icon = "📋" if is_choose else "🍽"
                 price_str = (
                     f"{f.get('price_in', 0)} / {f.get('price_out', 0)}"
-                    if not is_combo else "— (combo)"
+                    if not is_choose else "— (CHOOSE parent, sub-foods below)"
                 )
                 st.markdown(
                     f"**{icon} {f.get('name','')}**  "
@@ -1007,8 +977,8 @@ def _render_results(truth_items):
                 if f.get("description"):
                     st.caption(f.get("description"))
 
-                if is_combo and f.get("foods"):
-                    st.caption("📦 Combo components")
+                if is_choose and f.get("foods"):
+                    st.caption(f"📋 Sub-foods ({len(f['foods'])} variants)")
                     for child in f["foods"]:
                         child_type = TYPE_LABELS.get(child.get("type"), "?")
                         st.markdown(
@@ -1068,9 +1038,7 @@ def _render_results(truth_items):
             fc_list_h = (h.get("fc_tool_input") or {}).get("food_conditions") or []
             menu_payload = h.get("menu_tool_input") or {}
             raw_menu_h = merge_fc_and_groups(fc_list_h, menu_payload)
-            valid_h, errs = validate_menu(
-                raw_menu_h, extract_combos=h.get("extract_combos", True),
-            )
+            valid_h, errs = validate_menu(raw_menu_h)
             counts = count_menu(valid_h)
 
             if h.get("menu_err"):
@@ -1095,7 +1063,7 @@ def _render_results(truth_items):
                 "FCs":     counts["food_conditions"],
                 "Groups":  counts["groups"],
                 "Foods":   counts["foods"],
-                "Combos":  counts["combos"],
+                "Choose":  counts["choose_kinds"],
                 "Options": counts["option_groups"],
             }
             cost = _compute_run_cost(h)
@@ -1119,12 +1087,14 @@ def _render_results(truth_items):
     st.divider()
     with st.expander("ℹ️ Production notes"):
         st.markdown("""
-- **FC-first 2-call**: Bước 1 (model rẻ) scan modifier list → Bước 2 (model mạnh) build menu dùng whitelist. Giảm orphan, tăng accuracy.
-- **Schema**: `options[]` thay `beilages[]`, combo dùng `foods[]` đệ quy 1 level (không nest combo).
+- **FC-first 2-call**: Bước 1 (model rẻ) scan beilage modifiers → Bước 2 (model mạnh) build menu. Giảm orphan, tăng accuracy.
+- **Schema CHOOSE-aware**: kind=1 COMMON với beilages, kind=5 CHOOSE với sub-foods (mỗi sub-food kind=1, no nesting). Khớp Food model của hq-qrcode-admin.
+- **Decision rule**: header CÓ giá → kind=1 + beilage. Header KHÔNG giá → kind=5 + sub-foods.
 - **PDF text-detect**: PDF có text layer → trích text + thumbnail thấp DPI → tiết kiệm ~80% input token.
+- **Per-page parallel** Bước 2: PDF nhiều trang gọi song song max 4 concurrent.
 - **Preprocessing**: auto-crop, CLAHE, unsharp mask (chỉ khi mờ).
 - **Tool Use forced** ở cả 2 step: model bắt buộc gọi submit_* hoặc report_unreadable.
-- **Validation**: orphan check (name_food → food_conditions), autofill safety net, no-combo-in-combo.
+- **Validation**: orphan check (name_food → food_conditions), autofill safety net, no nested CHOOSE.
 - **Timeout 300s, retry 3x** cho Claude. OpenAI timeout 300s, retry 1x.
 """)
 

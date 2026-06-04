@@ -4,8 +4,9 @@ from menu_ocr.clients_claude import call_claude_tool
 from menu_ocr.clients_openai import call_openai_tool
 from menu_ocr.schemas import (
     OPENAI_TOOLS_FC,
+    OPENAI_TOOLS_MENU,
     TOOLS_FC,
-    build_tools_menu,
+    TOOLS_MENU,
 )
 
 
@@ -40,25 +41,15 @@ def call_fc_scan(client, model, prompt, image_b64_list=None,
 
 
 def call_menu_build(client, model, prompt, image_b64_list=None,
-                    max_tokens=8192, cache_prompt=True, *, extract_combos: bool):
+                    max_tokens=8192, cache_prompt=True):
     """Step 2: build groups[] using the FC whitelist embedded in `prompt`.
-    `tool_name` will be 'submit_menu_groups' or 'report_unreadable'.
-
-    `extract_combos`:
-      True  → schema accepts kind ∈ {1, 5}, combos with child foods[] allowed.
-      False → schema locks kind = 1, combos must be skipped (prompt + schema enforce).
-    """
-    anthropic_tools, openai_tools = build_tools_menu(extract_combos)
-    skip_combo_hint = (
-        "" if extract_combos
-        else " SKIP any combo bundle you see — only extract standalone dishes (kind=1)."
-    )
+    `tool_name` will be 'submit_menu_groups' or 'report_unreadable'."""
     hint = (
         "Call `submit_menu_groups` to build the menu, OR `report_unreadable` "
         "if the image is too poor. Use only modifier names from the whitelist "
-        "in the system prompt." + skip_combo_hint
+        "in the system prompt."
     )
     return _call_tool(
         client, model, prompt, image_b64_list, max_tokens, cache_prompt,
-        anthropic_tools=anthropic_tools, openai_tools=openai_tools, hint=hint,
+        anthropic_tools=TOOLS_MENU, openai_tools=OPENAI_TOOLS_MENU, hint=hint,
     )

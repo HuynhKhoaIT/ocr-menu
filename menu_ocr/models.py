@@ -1,8 +1,15 @@
 """Pydantic models for post-LLM validation.
 
 JSON Schema cannot express cross-field constraints (kind=1 ⇒ prices required,
-kind=5 ⇒ child foods[] required, leaf foods must not contain combos, …).
+kind=5 ⇒ sub-foods[] required, CHOOSE sub-foods must be kind=1, …).
 Those rules live here and run AFTER the LLM call.
+
+Terminology — aligned with hq-qrcode-admin Food model:
+- COMMON (kind=1): standalone dish with price + optional beilages.
+- CHOOSE (kind=5): parent header grouping variant sub-foods. Parent has NO
+  price; each sub-food is itself kind=1 with own price. NOT a "combo bundle"
+  — sub-foods are variants of the same dish concept (e.g. Hanoi Summer with
+  Tofu / Huhn / Garnelen variants).
 """
 from typing import List, Literal, Optional
 
@@ -19,7 +26,7 @@ except ImportError:
 
 if PYDANTIC_OK:
     # ====================================================
-    # Reusable modifier item (top-level food_conditions[])
+    # Reusable beilage modifier item (top-level food_conditions[])
     # ====================================================
     class FoodCondition(BaseModel):
         name: str = Field(..., min_length=1)
@@ -35,7 +42,7 @@ if PYDANTIC_OK:
             return v.strip()
 
     # ====================================================
-    # One option inside an OptionGroup (per-food inline price)
+    # One option inside an OptionGroup/beilage (per-food inline price)
     # ====================================================
     class FoodData(BaseModel):
         name_food: str = Field(..., min_length=1)
@@ -52,7 +59,7 @@ if PYDANTIC_OK:
             return v.strip()
 
     # ====================================================
-    # OptionGroup — modifier group attached to a Food
+    # OptionGroup — beilage modifier group attached to a Food
     # ====================================================
     class OptionGroup(BaseModel):
         name: str = Field(..., min_length=1)
@@ -70,28 +77,29 @@ if PYDANTIC_OK:
             return v.strip()
 
     # ====================================================
-    # Combo LEAF Food — used inside a combo's foods[].
-    # Locked to kind=1 with no `foods` field — structurally cannot nest.
+    # CHOOSE sub-food — Food that lives INSIDE a kind=5 parent.
+    # Locked to kind=1 (no nested CHOOSE) — structurally cannot nest.
     # ====================================================
-    class ComboLeafFood(BaseModel):
+    class ChooseSubFood(BaseModel):
         name: str = Field(..., min_length=1)
         plu: Optional[str] = None
         type: Literal[1, 2]
-        # Locked: combo children are always kind=1.
+        # Locked: CHOOSE sub-foods are always kind=1.
         kind: Literal[1] = 1
         price_in: float = Field(..., ge=0)
         price_out: float = Field(..., ge=0)
+        # Sub-foods can have their own beilages (size/topping on a specific variant).
         options: List[OptionGroup] = Field(default_factory=list)
 
         @field_validator("name")
         @classmethod
         def _name_not_empty(cls, v):
             if not v.strip():
-                raise ValueError("combo child name is empty")
+                raise ValueError("CHOOSE sub-food name is empty")
             return v.strip()
 
     # ====================================================
-    # Food — top-level menu row (standalone item or combo container)
+    # Food — top-level menu row (standalone COMMON or CHOOSE parent)
     # ====================================================
     class Food(BaseModel):
         name: str = Field(..., min_length=1)
@@ -103,10 +111,11 @@ if PYDANTIC_OK:
         sale_off_percent: Optional[float] = Field(default=None, ge=0, le=100)
         description: Optional[str] = None
         product_info: Optional[str] = None
+        # Beilages on this food (size/topping/required-choice).
         options: List[OptionGroup] = Field(default_factory=list)
-        # When kind=5: list of combo components (each kind=1).
+        # When kind=5 (CHOOSE): list of variant sub-foods.
         # When kind=1: must be None.
-        foods: Optional[List[ComboLeafFood]] = None
+        foods: Optional[List[ChooseSubFood]] = None
 
         @field_validator("name")
         @classmethod
@@ -121,12 +130,17 @@ if PYDANTIC_OK:
                 if self.price_in is None or self.price_out is None:
                     raise ValueError("kind=1 (COMMON) requires both price_in and price_out")
                 if self.foods:
-                    raise ValueError("kind=1 (COMMON) must NOT have child foods[]")
+                    raise ValueError("kind=1 (COMMON) must NOT have CHOOSE sub-foods[]")
             elif self.kind == KIND_CHOOSE:
                 if self.price_in is not None or self.price_out is not None:
-                    raise ValueError("kind=5 (COMBO) must have price_in=null and price_out=null")
-                if not self.foods or len(self.foods) < 2:
-                    raise ValueError("kind=5 (COMBO) requires foods[] with at least 2 entries")
+                    raise ValueError(
+                        "kind=5 (CHOOSE) parent must have price_in=null and price_out=null "
+                        "(parent header has no printed price)"
+                    )
+                if not self.foods or len(self.foods) < 1:
+                    raise ValueError(
+                        "kind=5 (CHOOSE) requires foods[] with at least 1 sub-food"
+                    )
             return self
 
     # ====================================================

@@ -4,7 +4,7 @@ from typing import List
 
 from menu_ocr.config import KIND_CHOOSE, KIND_COMMON
 from menu_ocr.models import (
-    ComboLeafFood,
+    ChooseSubFood,
     Food,
     FoodCondition,
     FoodData,
@@ -63,7 +63,7 @@ def _autofill_food_conditions(raw_menu: dict) -> int:
                 })
                 existing.add(key)
                 added += 1
-        # Also walk combo children — their options[] can reference modifiers too.
+        # Also walk CHOOSE sub-foods — their options[] can reference modifiers too.
         for child in f.get("foods") or []:
             _scan_food(child)
 
@@ -132,7 +132,7 @@ def merge_fc_and_groups(fc_list, groups_payload: dict) -> dict:
     return {"food_conditions": fcs, "groups": groups}
 
 
-def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
+def validate_menu(raw_menu: dict):
     """Validate the LLM's submit_menu payload against the nested schema.
 
     Returns (validated_dict, errors). `errors` is a list of dicts:
@@ -141,7 +141,7 @@ def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
 
     Cross-cutting checks beyond the Pydantic models:
       * Every food.options[].food_datas[].name_food must exist in food_conditions[].
-        Applied to combo-child foods too.
+        Applied to CHOOSE sub-foods too.
       * Drop foods whose options reference orphan names; record the orphan
         in errors so the UI can surface it.
       * raw_menu is deep-copied before autofill mutation so the caller's copy
@@ -153,31 +153,11 @@ def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
     # Deep-copy so autofill side-effects don't leak into the saved history.
     work = copy.deepcopy(raw_menu)
 
-    # Combo toggle: strip kind=5 foods BEFORE Pydantic runs (if model ignored
-    # the schema/prompt and emitted combos anyway).
-    combo_skipped = 0
-    if not extract_combos:
-        for g in work.get("groups") or []:
-            if not isinstance(g, dict):
-                continue
-            kept = []
-            for f in g.get("foods") or []:
-                if isinstance(f, dict) and f.get("kind") == KIND_CHOOSE:
-                    combo_skipped += 1
-                    continue
-                kept.append(f)
-            g["foods"] = kept
-
     # Safety net: derive missing food_conditions from options[].food_datas[]
     # BEFORE orphan check — otherwise every food with options would be dropped.
     auto_added = _autofill_food_conditions(work)
 
     errors: list = []
-    if combo_skipped:
-        errors.append(_err(
-            "groups", "<combo-skip>",
-            f"skipped {combo_skipped} combo (kind=5) item(s) — EXTRACT_COMBOS is OFF",
-        ))
     if auto_added:
         errors.append(_err(
             "food_conditions", "<auto>",
@@ -248,7 +228,7 @@ def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
                 continue
 
             # Cross-check: every food_data name_food must exist in food_conditions.
-            # Applies to parent food AND every combo child.
+            # Applies to parent food AND every CHOOSE sub-food.
             orphans = _orphans_in(food)
             for ci, child in enumerate(food.get("foods") or []):
                 for o in _orphans_in(child):
@@ -280,10 +260,10 @@ def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
 
 
 def flatten_foods(menu: dict) -> List[dict]:
-    """Flatten groups → foods (and combo children) into a flat list for scoring.
+    """Flatten groups → foods (and CHOOSE sub-foods) into a flat list for scoring.
 
-    A COMBO parent contributes one entry per child as "<parent> - <child>".
-    OptionGroups are NOT flattened (they are modifiers, not menu rows for matching).
+    A CHOOSE parent contributes one entry per sub-food as "<parent> - <sub-food>".
+    OptionGroups (beilages) are NOT flattened (they are modifiers, not menu rows for matching).
     """
     out = []
     for g in (menu or {}).get("groups", []):
@@ -312,12 +292,12 @@ def flatten_foods(menu: dict) -> List[dict]:
 
 
 def count_menu(menu: dict) -> dict:
-    """Return display metrics: groups, foods, combos, option_groups,
-    option_links, food_conditions, total_priced."""
+    """Return display metrics: groups, foods, choose_kinds, sub_foods,
+    option_groups, option_links, food_conditions, total_priced."""
     if not menu:
         menu = {}
-    n_groups = n_foods = n_combos = 0
-    n_combo_items = 0
+    n_groups = n_foods = n_choose = 0
+    n_sub_foods = 0
     n_option_groups = 0
     n_option_links = 0
 
@@ -333,20 +313,20 @@ def count_menu(menu: dict) -> dict:
             n_foods += 1
             _count_options(f)
             if f.get("kind") == KIND_CHOOSE:
-                n_combos += 1
+                n_choose += 1
                 children = f.get("foods") or []
-                n_combo_items += len(children)
+                n_sub_foods += len(children)
                 for child in children:
                     _count_options(child)
     n_fc = len(menu.get("food_conditions") or [])
     return {
         "groups":          n_groups,
         "foods":           n_foods,
-        "combos":          n_combos,
-        "combo_items":     n_combo_items,
+        "choose_kinds":    n_choose,
+        "sub_foods":       n_sub_foods,
         "option_groups":   n_option_groups,
         "option_links":    n_option_links,
         "food_conditions": n_fc,
-        # POS rows = foods + combo components
-        "total_priced":    n_foods + n_combo_items,
+        # POS rows = COMMON foods + CHOOSE sub-foods (CHOOSE parent itself has no price)
+        "total_priced":    n_foods - n_choose + n_sub_foods,
     }
