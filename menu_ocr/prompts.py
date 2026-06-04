@@ -20,84 +20,107 @@ anywhere on the menu image(s). The output becomes the WHITELIST for step 2.
 A wrong price = real money lost. If anything is unreadable, refuse.
 
 ============================================================
-WHAT COUNTS AS A BEILAGE MODIFIER (DO list)
+WHAT IS A BEILAGE MODIFIER — conceptual definition
 ============================================================
-A beilage modifier is a small CHOICE customer can add to / configure on a dish:
+A beilage modifier is any CONFIGURATION CHOICE the customer can make to
+augment, adjust, or pick a variant OF a base dish. It is NOT itself a dish.
 
-  • SIZE variants            — "Size M", "Size L", "200g", "Black Angus 200g"
-  • TOPPING add-ons          — "Trân châu", "Pudding", "Phô mai", "Bacon", "Thêm trứng"
-  • SAUCE / STYLE            — "Spicy", "Mild", "Sốt cà", "Sốt tiêu"
-  • REQUIRED protein choice  — "Tái", "Nạm", "Gân" (when ALL same price under one base dish)
+It earns the label "modifier" if ALL three hold:
 
-The defining characteristic: the PARENT DISH HAS A PRINTED BASE PRICE, and the
-modifier is an ADJUSTMENT to that dish (added cost, swap, configuration).
+  ✓ It modifies a PARENT DISH that has its own printed base price on the menu.
+  ✓ It changes a feature / adds an extra / picks a variant — but the parent
+    dish remains the dish (size swap, topping, sauce, required protein style).
+  ✓ It does NOT stand alone on the menu as a separate priced item.
 
-============================================================
-WHAT IS NOT A MODIFIER (do NOT list)
-============================================================
-  • Base dish names — "Phở bò tái", "Hamburger", "Trà sữa", "Pizza Margherita"
-  • Section headers — "Drinks", "Mains", "Starters", "Finger Food"
-  • CHOOSE sub-food names — when a parent header has NO printed price next to it
-    and indented children each have THEIR OWN price, those children are NOT
-    modifiers. They are full Foods (CHOOSE sub-foods). DO NOT list them here.
-
-EXAMPLES of patterns where children are CHOOSE sub-foods (DO NOT list):
-
-  Pattern A — Hanoi Summer style:
-    Hanoi Summer (2 Stk.)              ← parent header, NO price
-    Reisnudelsalat, Kräuter…           ← description
-        Tofu             5,20          ← sub-food (variant), has own price
-        Huhn             5,20
-        Garnelen         5,90
-        Ebi Tempura      6,20
-        Frittierter Lachs 6,20
-    → Tofu / Huhn / Garnelen / Ebi Tempura / Frittierter Lachs are CHOOSE sub-foods.
-    → DO NOT list any of these in food_conditions[].
-
-  Pattern B — PHO style:
-    PHO                                ← parent header, NO price
-    Brühe, Reisbandnudeln, Kräuter
-        Veggie       12,90             ← sub-food
-        Tofu         12,90
-        Rind         14,50
-        Huhn         13,90
-        Fleisch-Mix  15,90
-    → Veggie / Tofu / Rind / Huhn / Fleisch-Mix are CHOOSE sub-foods.
-    → DO NOT list any in food_conditions[].
-
-EXAMPLES of patterns where children ARE modifiers (DO list):
-
-  Pattern C — same-price required choice (parent HAS price):
-    Phở (tái / nạm / gân) — 70k        ← parent has price 70k
-    → DO list: "Tái" (base_price 0), "Nạm" (0), "Gân" (0).
-
-  Pattern D — Size with base price visible (same-row inline):
-    Trà sữa  S 40k | M 50k | L 60k     ← base = S 40k
-    → DO list: "Size M" (base_price 10), "Size L" (base_price 20).
-
-  Pattern D2 — Size-table inline PER ROW (common in EU/German drink menus):
-    Cola        0,33l  2,00€   liter  2,80€
-    Cola Light  0,33l  2,00€   liter  2,80€
-    Fritz       0,33l  2,20€              ← only 1 size — skip beilage
-    Capri Sun           1,00€              ← no size label — skip beilage
-
-    Each row has up to 2 (size-label + price) pairs side-by-side. The SMALLER
-    size ('0,33l') is the BASE — do NOT add to FC. The LARGER size ('liter',
-    '1L', 'Krug', 'groß', '0,5l' — whatever the menu calls it) IS a modifier:
-    → DO list: {name: "Liter", base_price: 0.80}   ← differential = 2.80 - 2.00
-    Note: copy the exact label printed on the menu (lowercase 'liter',
-    or '1L', etc.). Just normalize casing consistently.
-
-  Pattern E — Explicit add-ons:
-    Phở bò 70k. Thêm trứng +5k, thêm hành +3k
-    → DO list: "Trứng" (5), "Hành" (3).
+If even ONE fails — most importantly, if the parent has NO printed base price
+and the variants each have their OWN price — those variants are NOT modifiers.
+They are CHOOSE sub-foods (full Food records) and belong to step 2's foods[],
+NOT this step's food_conditions[].
 
 ============================================================
-THE DECISION RULE (memorize this)
+⭐ THE SINGLE DECISION RULE (applies to ANY layout)
 ============================================================
-For variants/children under a header:
-  ⚠️ Header HAS a printed price → children are BEILAGE modifiers → LIST THEM.
-  ⚠️ Header HAS NO printed price → children are CHOOSE sub-foods → DO NOT LIST.
+For any indented / grouped variants under a header line:
+
+  Parent has a PRINTED PRICE on the menu  → variants are BEILAGE modifiers → LIST
+  Parent has NO PRINTED PRICE             → variants are CHOOSE sub-foods → SKIP
+
+This rule alone resolves every layout you will encounter — table, inline,
+indented, multi-column, columnar header, footnote. The pattern examples
+below are illustrations of HOW the rule applies; they are not an exhaustive
+checklist. When you see a layout not listed, apply the rule directly.
+
+============================================================
+CATEGORIES (semantic guidance — name and price differently per category)
+============================================================
+Once you've decided something IS a modifier (rule above), categorize it:
+
+  • SIZE / PORTION         — adjusts quantity. Name = the variant label
+                             ("Size M", "Size L", "200g", "1L", "Krug").
+                             Price = DIFFERENTIAL from the parent's base.
+  • TOPPING / ADD-ON       — optional extra item added on top of the dish.
+                             Name = the topping ("Trân châu", "Phô mai",
+                             "Trứng"). Price = the extra charge as printed.
+  • SAUCE / STYLE / SPICE  — flavor/style config. Name = the style label
+                             ("Spicy", "Mild", "Sốt cà"). Price = the extra
+                             if any, else 0.
+  • REQUIRED PROTEIN/STYLE PICK at same price — choice within a single dish
+                             with one printed price. Name = the choice label
+                             ("Tái", "Nạm", "Gân"). Price = 0 (no extra).
+
+These are STARTING categories — if the menu uses a label that fits none
+exactly (e.g. allergen tag, language variant, prep style), still emit it as
+a modifier IF the decision rule above says it's a modifier. Use the closest
+category name in your head; the field doesn't enforce a fixed set.
+
+============================================================
+EXAMPLES — illustrating the rule, not enumerating layouts
+============================================================
+GOOD (parent has price → list the modifiers):
+
+  Phở (tái / nạm / gân) — 70k                  ← parent has price 70k
+    → list: "Tái" (0), "Nạm" (0), "Gân" (0)    — same-price required pick
+
+  Trà sữa  S 40k | M 50k | L 60k               ← parent has price (S as base)
+    → list: "Size M" (10), "Size L" (20)        — size-up differential
+
+  Cola        0,33l  2,00€   liter  2,80€      ← parent has price (small as base)
+  Cola Light  0,33l  2,00€   liter  2,80€      → list ONCE: "Liter" (0.80)
+  Fritz       0,33l  2,20€                      — Fritz has only 1 size, skip
+  Capri Sun           1,00€                     — Capri Sun has no size, skip
+
+  Phở bò 70k. Thêm trứng +5k, thêm hành +3k    ← explicit add-ons
+    → list: "Trứng" (5), "Hành" (3)
+
+BAD — these look like modifiers but ARE NOT (parent has no price):
+
+  Hanoi Summer (2 Stk.)              ← NO price on parent line
+      Tofu             5,20
+      Huhn             5,20
+      Garnelen         5,90
+    → DO NOT list Tofu / Huhn / Garnelen. These are CHOOSE sub-foods.
+
+  PHO                                ← NO price on parent line
+      Veggie       12,90
+      Rind         14,50
+    → DO NOT list Veggie / Rind. These are CHOOSE sub-foods.
+
+============================================================
+WHEN YOU SEE AN UNFAMILIAR LAYOUT
+============================================================
+Do NOT try to pattern-match. Instead:
+
+  Step 1. Find the parent line (the dish header).
+  Step 2. Does the parent have a printed price on its own line?
+            YES → any variant below it is a beilage modifier → LIST.
+            NO  → variants are CHOOSE sub-foods → SKIP (step 2 handles them).
+  Step 3. For modifiers you decide to list, pick the right price interpretation:
+            - Differential if variant changes the parent (size, premium upgrade)
+            - Absolute extra cost if variant is an additional item (topping)
+            - 0 if variant is a same-price required pick (protein style)
+
+Trust the rule. If uncertain after step 2, defaulting to NOT listing is safer
+than over-listing — orphan refs from step 2 will be auto-filled as a safety net.
 
 ============================================================
 RULES
@@ -176,34 +199,44 @@ DATA MODEL (mirrors the CMS Food/foodCondition API 1-to-1)
     with own price; may have own options[]. NO nesting (sub-foods can't be kind=5).
 
 ============================================================
-KIND CLASSIFICATION — THE CORE DECISION
+KIND CLASSIFICATION — conceptual definition
 ============================================================
-kind=1 (COMMON) — DEFAULT for almost every menu item.
-  Use kind=1 for:
-  • Standalone dishes with one printed price.
-  • Dishes with SIZE variants where parent has a base price.
-  • Dishes with TOPPING options.
-  • Dishes with required SAME-PRICE choice (Phở tái/nạm/gân — all 70k).
-  COMMON REQUIRES price_in and price_out.
-  COMMON MUST have foods = null.
+kind=1 (COMMON) — the dish is the unit of purchase.
+  The PARENT line is itself a complete priced dish. Any variants below it
+  modify the dish (size, topping, sauce, required protein) but do not
+  REPLACE the dish — the customer still orders "the dish" plus chosen
+  modifiers. Use kind=1 whenever the parent has a printed base price.
+  COMMON REQUIRES price_in and price_out. MUST have foods = null.
 
-kind=5 (CHOOSE) — when the parent header has NO printed price.
-  A CHOOSE parent groups 2+ (occasionally 1) variant sub-foods, each of which
-  is a real dish with its own price. The parent itself is just a header.
-  CHOOSE REQUIRES foods[] with ≥1 sub-food. Each sub-food is kind=1 with own
-  price_in/price_out. Sub-foods MAY have their own beilages (options[]).
-  CHOOSE MUST have price_in = null and price_out = null.
+kind=5 (CHOOSE) — the dish is a category; the variants are the real dishes.
+  The PARENT line is just a header / category label with NO printed price.
+  Each child variant has its OWN price and IS the actual dish the customer
+  orders. The header exists only to group the variants visually.
+  CHOOSE REQUIRES foods[] ≥ 1. Each sub-food is kind=1 with own price.
+  Sub-foods MAY have their own beilages. price_in / price_out = null.
   ⚠️ NO NESTING. CHOOSE sub-foods are always kind=1, never kind=5.
 
 ============================================================
-⭐ THE DECISION RULE FOR INDENTED VARIANTS (READ TWICE)
+⭐ THE SINGLE DECISION RULE (applies to ANY layout)
 ============================================================
-When you see a header with indented price-bearing children below it:
+When you see a header with grouped variants below it:
 
-  ⚠️ Header HAS a printed price next to the name      → kind=1 + beilage
-  ⚠️ Header HAS NO printed price next to the name     → kind=5 (CHOOSE) + sub-foods
+  Parent has a PRINTED PRICE on the menu  → kind=1 + beilage (options[])
+  Parent has NO PRINTED PRICE             → kind=5 (CHOOSE) + sub-foods (foods[])
 
-This is the SINGLE rule for distinguishing CHOOSE from beilage. Use it.
+This one rule resolves every layout: indented children, multi-column tables,
+inline same-row variants, footnote add-ons, language-specific patterns.
+The examples below are illustrations of how the rule applies in common
+layouts — they are NOT an exhaustive list. When you see a layout not shown
+here, do not try to pattern-match it: apply the rule directly.
+
+WHEN UNCERTAIN — fallback heuristic in priority order:
+  1. Does the parent line have a price next to its name? → kind=1.
+  2. Do the children have INDIVIDUAL prices, parent line has none? → kind=5.
+  3. Are all children at the SAME price under a priced parent? → kind=1 +
+     required beilage (type=0, option=1).
+  4. Default to kind=1 if still unsure (a wrong kind=1 with one beilage is
+     more recoverable than a wrong kind=5 that drops the parent's price).
 
 ============================================================
 EXAMPLES — CHOOSE parent + sub-foods (header NO price)
