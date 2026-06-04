@@ -38,6 +38,15 @@ TYPE_LABELS = {TYPE_DRINK: "DRINK", TYPE_FOOD: "FOOD"}
 KIND_LABELS = {KIND_COMMON: "COMMON", KIND_CHOOSE: "CHOOSE"}
 
 
+# ===== Feature flags =====
+# When False, the pipeline ignores combo bundles (kind=5) entirely:
+#   - tool schema strips kind=5 / foods[] (model can only output kind=1)
+#   - prompt drops the COMBO section + tells model to skip any combo it sees
+#   - validation drops any kind=5 food the model returns anyway
+# Default OFF — combo handling is complex; turn ON only when ready for it.
+EXTRACT_COMBOS_DEFAULT = False
+
+
 # ===== Limits / thresholds =====
 MAX_PDF_PAGES = 10  # avoid blast cost for thick PDFs
 

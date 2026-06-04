@@ -13,7 +13,7 @@ Data model overview:
 - Food kind=5    = combo bundle — has child `foods[]` (each child kind=1, no
                    further nesting allowed).
 """
-from menu_ocr.config import FOOD_TYPES, FOOD_KINDS
+from menu_ocr.config import EXTRACT_COMBOS_DEFAULT, FOOD_TYPES, FOOD_KINDS, KIND_COMMON
 
 
 # ============================================================
@@ -183,67 +183,81 @@ FOOD_LEAF_SCHEMA = {
 # ============================================================
 # Food — top-level menu row (standalone item or combo container)
 # ============================================================
-FOOD_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["name", "type", "kind"],
-    "properties": {
-        "name": {"type": "string", "description": "Item name copied exactly from the image, original language preserved."},
-        "plu":  {"type": ["string", "null"], "description": "PLU/SKU if printed. NULL otherwise."},
-        "type": {
-            "type": "integer",
-            "enum": FOOD_TYPES,
-            "description": (
-                "1 = DRINK (soda, juice, tea, coffee, beer, cocktail, smoothie, water, milk...). "
-                "2 = FOOD (everything edible). If the group/section is 'Drinks / Beverages / "
-                "Bar / Coffee / Tea / Cocktail / Wine list / Soft drinks' → all items default "
-                "to type=1. Otherwise default to type=2."
-            ),
+# Built as a function so the EXTRACT_COMBOS flag can strip combo support
+# entirely (kind enum restricted to [1], `foods` field removed).
+def _build_food_schema(extract_combos: bool) -> dict:
+    if extract_combos:
+        kind_enum = FOOD_KINDS
+        kind_desc = (
+            "1 = COMMON (DEFAULT). One base price; size/topping variants live in options[]. "
+            "5 = COMBO bundle — 2+ DIFFERENT items sold together (e.g. 'Combo 2 người: "
+            "Phở + Coca = 250k'). Combos have child foods[] (kind=1 each, NO nesting). "
+            "Size variants of the SAME dish are NEVER kind=5 — they are kind=1 + Size option."
+        )
+        price_in_desc = (
+            "Dine-in base price (smallest/cheapest variant if size exists). "
+            "REQUIRED when kind=1. MUST be null when kind=5 (combo total is implicit "
+            "from child foods)."
+        )
+        price_out_desc = (
+            "Take-away base price. Copy price_in if menu shows only one price. "
+            "REQUIRED when kind=1. MUST be null when kind=5."
+        )
+    else:
+        kind_enum = [KIND_COMMON]
+        kind_desc = (
+            "Always 1 (COMMON). Combo extraction is DISABLED in this run — "
+            "if you see a combo bundle on the menu, SKIP it entirely (do not add "
+            "it to groups[]). Only standalone dishes and dishes with options are wanted."
+        )
+        price_in_desc = (
+            "Dine-in base price (smallest variant if size exists). REQUIRED."
+        )
+        price_out_desc = (
+            "Take-away base price. Copy price_in if menu shows only one price. REQUIRED."
+        )
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "type", "kind"],
+        "properties": {
+            "name": {"type": "string", "description": "Item name copied exactly from the image, original language preserved."},
+            "plu":  {"type": ["string", "null"], "description": "PLU/SKU if printed. NULL otherwise."},
+            "type": {
+                "type": "integer",
+                "enum": FOOD_TYPES,
+                "description": (
+                    "1 = DRINK (soda, juice, tea, coffee, beer, cocktail, smoothie, water, milk...). "
+                    "2 = FOOD (everything edible). If the group/section is 'Drinks / Beverages / "
+                    "Bar / Coffee / Tea / Cocktail / Wine list / Soft drinks' → all items default "
+                    "to type=1. Otherwise default to type=2."
+                ),
+            },
+            "kind": {
+                "type": "integer",
+                "enum": kind_enum,
+                "description": kind_desc,
+            },
+            "price_in":  {"type": ["number", "null"], "minimum": 0, "description": price_in_desc},
+            "price_out": {"type": ["number", "null"], "minimum": 0, "description": price_out_desc},
+            "sale_off_percent": {
+                "type": ["number", "null"],
+                "minimum": 0,
+                "maximum": 100,
+                "description": "Discount % if a struck-through original price is shown. NULL otherwise.",
+            },
+            "description":  {"type": ["string", "null"], "description": "Short note printed next to item."},
+            "product_info": {"type": ["string", "null"], "description": "Ingredients / allergens if printed."},
+            "options": {
+                "type": "array",
+                "description": "OptionGroups attached to this food. Empty array if no modifiers.",
+                "items": OPTION_GROUP_SCHEMA,
+            },
         },
-        "kind": {
-            "type": "integer",
-            "enum": FOOD_KINDS,
-            "description": (
-                "1 = COMMON (DEFAULT). One base price; size/topping variants live in options[]. "
-                "5 = COMBO bundle — 2+ DIFFERENT items sold together (e.g. 'Combo 2 người: "
-                "Phở + Coca = 250k'). Combos have child foods[] (kind=1 each, NO nesting). "
-                "Size variants of the SAME dish are NEVER kind=5 — they are kind=1 + Size option."
-            ),
-        },
-        "price_in": {
-            "type": ["number", "null"],
-            "minimum": 0,
-            "description": (
-                "Dine-in base price (smallest/cheapest variant if size exists). "
-                "REQUIRED when kind=1. MUST be null when kind=5 (combo total is implicit "
-                "from child foods)."
-            ),
-        },
-        "price_out": {
-            "type": ["number", "null"],
-            "minimum": 0,
-            "description": (
-                "Take-away base price. Copy price_in if menu shows only one price. "
-                "REQUIRED when kind=1. MUST be null when kind=5."
-            ),
-        },
-        "sale_off_percent": {
-            "type": ["number", "null"],
-            "minimum": 0,
-            "maximum": 100,
-            "description": "Discount % if a struck-through original price is shown. NULL otherwise.",
-        },
-        "description":  {"type": ["string", "null"], "description": "Short note printed next to item."},
-        "product_info": {"type": ["string", "null"], "description": "Ingredients / allergens if printed."},
-        "options": {
-            "type": "array",
-            "description": (
-                "OptionGroups attached to this food. ALLOWED for both kind=1 and kind=5. "
-                "Empty array if no modifiers."
-            ),
-            "items": OPTION_GROUP_SCHEMA,
-        },
-        "foods": {
+    }
+    if extract_combos:
+        schema["properties"]["foods"] = {
             "type": ["array", "null"],
             "minItems": 2,
             "description": (
@@ -251,28 +265,36 @@ FOOD_SCHEMA = {
                 "Each child is a complete Food with kind=1 (combos cannot nest)."
             ),
             "items": FOOD_LEAF_SCHEMA,
-        },
-    },
-}
+        }
+    return schema
+
+
+# Default schema baked at import time (uses config default).
+# For the runtime toggle, see build_menu_tool() below.
+FOOD_SCHEMA = _build_food_schema(EXTRACT_COMBOS_DEFAULT)
 
 
 # ============================================================
 # Group — section on the menu
 # ============================================================
-GROUP_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["name", "foods"],
-    "properties": {
-        "name":        {"type": "string", "description": "Section/category name (e.g. 'Appetizers', 'Drinks')."},
-        "description": {"type": ["string", "null"], "description": "Section description if printed."},
-        "foods": {
-            "type": "array",
-            "minItems": 1,
-            "items": FOOD_SCHEMA,
+def _build_group_schema(food_schema: dict) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["name", "foods"],
+        "properties": {
+            "name":        {"type": "string", "description": "Section/category name (e.g. 'Appetizers', 'Drinks')."},
+            "description": {"type": ["string", "null"], "description": "Section description if printed."},
+            "foods": {
+                "type": "array",
+                "minItems": 1,
+                "items": food_schema,
+            },
         },
-    },
-}
+    }
+
+
+GROUP_SCHEMA = _build_group_schema(FOOD_SCHEMA)
 
 
 # ============================================================
@@ -323,43 +345,60 @@ TOOL_SUBMIT_FOOD_CONDITIONS = {
 # name_food inside any options[].food_datas[] MUST come from the FC whitelist
 # provided by step 1. The schema itself cannot enforce that (JSON Schema has no
 # cross-reference); the Pydantic validator does (orphan check).
-TOOL_SUBMIT_MENU_GROUPS = {
-    "name": "submit_menu_groups",
-    "description": (
-        "Step 2 of 2: Build the menu structure using the food_conditions WHITELIST "
-        "provided in the system prompt. STRICT RULES:\n"
-        "1. EVERY price digit must be unambiguously readable. If you cannot tell whether a digit is "
-        "'3' or '8', '0' or '6', '1' or '7' — call report_unreadable.\n"
-        "2. Wrong price = real money lost. Bias toward refusing.\n"
-        "3. If less than 50% of items are readable, call report_unreadable.\n"
-        "4. NEVER infer prices from neighboring items. Read every number directly.\n"
+def _build_submit_menu_groups_tool(extract_combos: bool) -> dict:
+    combo_rules = (
         "5. type: 1=DRINK, 2=FOOD. kind: 1=COMMON (default), 5=COMBO (bundle only).\n"
         "6. Size/topping variants → kind=1 + options[] (NOT kind=5).\n"
         "7. Combos (kind=5) have child foods[]. Each child kind=1 — NO combos inside combos.\n"
-        "8. EVERY name_food inside any food.options[].food_datas[] MUST match a name "
-        "from the food_conditions whitelist (case-insensitive). Do NOT invent new modifier "
-        "names here — if you need one that's missing, that's a bug in step 1.\n"
-        "9. Per-food price snapshots in food_datas[].price MAY differ from the whitelist's "
-        "base_price (that's the point of the per-food override)."
-    ),
-    "input_schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["groups"],
-        "properties": {
-            "groups": {
-                "type": "array",
-                "minItems": 1,
-                "description": (
-                    "Each section/category on the menu becomes one group. "
-                    "If the menu has no sections, return a single group named 'Menu'. "
-                    "Skip any food whose name or price is not clearly readable."
-                ),
-                "items": GROUP_SCHEMA,
+    ) if extract_combos else (
+        "5. type: 1=DRINK, 2=FOOD. kind is ALWAYS 1 (COMMON) — combo extraction is DISABLED.\n"
+        "6. Size/topping variants → kind=1 + options[].\n"
+        "7. If you see a combo bundle ('Combo 2 người', 'Set Menu', '2 món + 1 nước = 250k') — "
+        "SKIP IT entirely. Do not add the combo to groups[] and do not add its component items "
+        "separately either (unless those items also appear independently elsewhere on the menu).\n"
+    )
+
+    food_schema = _build_food_schema(extract_combos)
+    group_schema = _build_group_schema(food_schema)
+
+    return {
+        "name": "submit_menu_groups",
+        "description": (
+            "Step 2 of 2: Build the menu structure using the food_conditions WHITELIST "
+            "provided in the system prompt. STRICT RULES:\n"
+            "1. EVERY price digit must be unambiguously readable. If you cannot tell whether a digit is "
+            "'3' or '8', '0' or '6', '1' or '7' — call report_unreadable.\n"
+            "2. Wrong price = real money lost. Bias toward refusing.\n"
+            "3. If less than 50% of items are readable, call report_unreadable.\n"
+            "4. NEVER infer prices from neighboring items. Read every number directly.\n"
+            + combo_rules +
+            "8. EVERY name_food inside any food.options[].food_datas[] MUST match a name "
+            "from the food_conditions whitelist (case-insensitive). Do NOT invent new modifier "
+            "names here — if you need one that's missing, that's a bug in step 1.\n"
+            "9. Per-food price snapshots in food_datas[].price MAY differ from the whitelist's "
+            "base_price (that's the point of the per-food override)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["groups"],
+            "properties": {
+                "groups": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": (
+                        "Each section/category on the menu becomes one group. "
+                        "If the menu has no sections, return a single group named 'Menu'. "
+                        "Skip any food whose name or price is not clearly readable."
+                    ),
+                    "items": group_schema,
+                },
             },
         },
-    },
-}
+    }
+
+
+TOOL_SUBMIT_MENU_GROUPS = _build_submit_menu_groups_tool(EXTRACT_COMBOS_DEFAULT)
 
 
 # ============================================================
@@ -388,7 +427,8 @@ TOOL_REPORT_UNREADABLE = {
 }
 
 
-# Tool sets for each call.
+# Default tool sets baked at import time (uses config default).
+# Call build_tools_menu(extract_combos=...) at runtime to override per-request.
 TOOLS_FC   = [TOOL_SUBMIT_FOOD_CONDITIONS, TOOL_REPORT_UNREADABLE]
 TOOLS_MENU = [TOOL_SUBMIT_MENU_GROUPS,     TOOL_REPORT_UNREADABLE]
 
@@ -409,3 +449,14 @@ def _to_openai(tool: dict) -> dict:
 
 OPENAI_TOOLS_FC   = [_to_openai(t) for t in TOOLS_FC]
 OPENAI_TOOLS_MENU = [_to_openai(t) for t in TOOLS_MENU]
+
+
+# ============================================================
+# Runtime builders — use these when EXTRACT_COMBOS is toggled per run.
+# Returns (anthropic_tools, openai_tools) tuple ready for the dispatch layer.
+# ============================================================
+def build_tools_menu(extract_combos: bool):
+    tool = _build_submit_menu_groups_tool(extract_combos)
+    anthropic = [tool, TOOL_REPORT_UNREADABLE]
+    openai    = [_to_openai(t) for t in anthropic]
+    return anthropic, openai

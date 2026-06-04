@@ -132,7 +132,7 @@ def merge_fc_and_groups(fc_list, groups_payload: dict) -> dict:
     return {"food_conditions": fcs, "groups": groups}
 
 
-def validate_menu(raw_menu: dict):
+def validate_menu(raw_menu: dict, *, extract_combos: bool = True):
     """Validate the LLM's submit_menu payload against the nested schema.
 
     Returns (validated_dict, errors). `errors` is a list of dicts:
@@ -153,11 +153,31 @@ def validate_menu(raw_menu: dict):
     # Deep-copy so autofill side-effects don't leak into the saved history.
     work = copy.deepcopy(raw_menu)
 
+    # Combo toggle: strip kind=5 foods BEFORE Pydantic runs (if model ignored
+    # the schema/prompt and emitted combos anyway).
+    combo_skipped = 0
+    if not extract_combos:
+        for g in work.get("groups") or []:
+            if not isinstance(g, dict):
+                continue
+            kept = []
+            for f in g.get("foods") or []:
+                if isinstance(f, dict) and f.get("kind") == KIND_CHOOSE:
+                    combo_skipped += 1
+                    continue
+                kept.append(f)
+            g["foods"] = kept
+
     # Safety net: derive missing food_conditions from options[].food_datas[]
     # BEFORE orphan check — otherwise every food with options would be dropped.
     auto_added = _autofill_food_conditions(work)
 
     errors: list = []
+    if combo_skipped:
+        errors.append(_err(
+            "groups", "<combo-skip>",
+            f"skipped {combo_skipped} combo (kind=5) item(s) — EXTRACT_COMBOS is OFF",
+        ))
     if auto_added:
         errors.append(_err(
             "food_conditions", "<auto>",

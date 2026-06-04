@@ -41,6 +41,7 @@ from menu_ocr.config import (
     BLUR_BLOCK_THRESHOLD,
     BLUR_WARN_THRESHOLD,
     CLAUDE_MODELS_FALLBACK,
+    EXTRACT_COMBOS_DEFAULT,
     KIND_CHOOSE,
     KIND_LABELS,
     OPENAI_MODELS_FALLBACK,
@@ -99,7 +100,12 @@ def encode_b64(png_bytes: bytes) -> str:
 
 
 from menu_ocr.pricing import compute_cost
-from menu_ocr.prompts import FC_SCAN_PROMPT, MENU_BUILD_PROMPT, TEXT_PDF_PROMPT_PREFIX
+from menu_ocr.prompts import (
+    FC_SCAN_PROMPT,
+    MENU_BUILD_PROMPT,
+    TEXT_PDF_PROMPT_PREFIX,
+    build_menu_prompt,
+)
 from menu_ocr.scoring import score_against_truth
 from menu_ocr.validation import (
     count_menu,
@@ -321,6 +327,18 @@ def main():
         blur_check_on = st.checkbox("Cảnh báo ảnh mờ trước khi gọi API", value=True)
 
         st.divider()
+        st.header("🍱 Phạm vi trích xuất")
+        extract_combos = st.checkbox(
+            "Lấy combo (kind=5)",
+            value=EXTRACT_COMBOS_DEFAULT,
+            help=("TẮT: bỏ qua mọi combo bundle trên menu, chỉ lấy món thường. "
+                  "BẬT: trích combo đầy đủ với foods[] children. Default OFF — "
+                  "combo phức tạp, chỉ bật khi đã sẵn sàng xử lý."),
+        )
+        if not extract_combos:
+            st.caption("⚠️ Combo bundle sẽ bị BỎ QUA hoàn toàn.")
+
+        st.divider()
         if st.button("🗑️ Xóa lịch sử so sánh", use_container_width=True):
             st.session_state.pop("history", None)
             st.rerun()
@@ -405,10 +423,18 @@ def main():
                 st.error(f"JSON đáp án lỗi: {e}")
 
     with st.expander("📝 Prompts (chỉnh được)"):
-        prompt_fc   = st.text_area("Bước 1 — FC scan prompt", value=FC_SCAN_PROMPT, height=240)
+        prompt_fc = st.text_area(
+            "Bước 1 — FC scan prompt", value=FC_SCAN_PROMPT, height=240,
+        )
+        # build_menu_prompt() resolves __KIND_SECTION__/__COMBO_SECTION__/
+        # __DATA_MODEL_SECTION__ based on the combo toggle BEFORE showing the
+        # editable text so the user sees exactly what the model will see.
+        default_menu_prompt = build_menu_prompt(extract_combos)
         prompt_menu = st.text_area(
-            "Bước 2 — Menu build prompt (chứa `__FC_LIST_JSON__` sentinel)",
-            value=MENU_BUILD_PROMPT, height=240,
+            f"Bước 2 — Menu build prompt (`__FC_LIST_JSON__` sentinel · "
+            f"combo: {'BẬT' if extract_combos else 'TẮT'})",
+            value=default_menu_prompt, height=240,
+            key=f"prompt_menu_combo_{extract_combos}",   # reset textarea when toggle flips
         )
 
     # ========================================================
@@ -441,6 +467,7 @@ def main():
             max_tokens_fc=max_tokens_fc, max_tokens_menu=max_tokens_menu,
             cache_prompt=cache_prompt,
             blur_level=blur_level, worst_bs=worst_bs,
+            extract_combos=extract_combos,
         )
 
     # ========================================================
@@ -517,7 +544,8 @@ def _run_pipeline(*, provider_key, api_key_input,
                   prompt_fc, prompt_menu,
                   images_b64, source_kind, text_per_page,
                   max_tokens_fc, max_tokens_menu, cache_prompt,
-                  blur_level, worst_bs):
+                  blur_level, worst_bs,
+                  extract_combos):
     if provider_key == "claude":
         client, err = get_client(api_key_input)
     else:
@@ -619,6 +647,7 @@ def _run_pipeline(*, provider_key, api_key_input,
             image_b64_list=[images_b64[page_idx]],   # ONLY this page
             max_tokens=max_tokens_menu,
             cache_prompt=cache_prompt,
+            extract_combos=extract_combos,
         )
         print(f"[{datetime.now():%H:%M:%S}] ← menu build page {page_idx+1}/{n_pages} "
               f"in {r['sec']:.1f}s · tool={r['tool_name']} · err={r['error']}",
@@ -731,6 +760,7 @@ def _run_pipeline(*, provider_key, api_key_input,
         "sec":         r1["sec"] + menu_sec_total,
         "n_pages":     n_pages,
         "source_kind": source_kind,
+        "extract_combos": extract_combos,
         "time":        datetime.now().strftime("%H:%M:%S"),
     })
 
@@ -877,7 +907,9 @@ def _render_results(truth_items):
         return
 
     raw_menu = merge_fc_and_groups(fc_list, last.get("menu_tool_input") or {})
-    valid_menu, errors = validate_menu(raw_menu)
+    # Default True if missing (legacy history entries from before the toggle).
+    extract_combos_used = last.get("extract_combos", True)
+    valid_menu, errors = validate_menu(raw_menu, extract_combos=extract_combos_used)
     counts_raw   = count_menu(raw_menu)
     counts_valid = count_menu(valid_menu)
 
@@ -1036,7 +1068,9 @@ def _render_results(truth_items):
             fc_list_h = (h.get("fc_tool_input") or {}).get("food_conditions") or []
             menu_payload = h.get("menu_tool_input") or {}
             raw_menu_h = merge_fc_and_groups(fc_list_h, menu_payload)
-            valid_h, errs = validate_menu(raw_menu_h)
+            valid_h, errs = validate_menu(
+                raw_menu_h, extract_combos=h.get("extract_combos", True),
+            )
             counts = count_menu(valid_h)
 
             if h.get("menu_err"):

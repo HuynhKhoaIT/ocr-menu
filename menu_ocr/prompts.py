@@ -138,34 +138,12 @@ NON-NEGOTIABLE RULES
 ============================================================
 DATA MODEL (mirrors the CMS API 1-to-1)
 ============================================================
-(1) groups[]  — sections of the menu (Starters, Main, Drinks, ...).
-(2) food      — one row on the menu.
-    Fields: { name, plu?, type, kind, price_in, price_out, options[], foods? }
-    `foods` is ONLY present when kind=5 (combo); each child is kind=1.
-(3) options[] — modifier groups attached to a food.
-    Each group: { name, type, option, food_datas[] }
-    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }
+__DATA_MODEL_SECTION__
 
 ============================================================
 KIND CLASSIFICATION — CRITICAL
 ============================================================
-kind=1 (COMMON) — DEFAULT for almost every menu item.
-  Use kind=1 for:
-  • Standalone dishes with one price.
-  • Dishes with SIZE variants — base = smallest size, larger sizes in a `Size` option group.
-  • Dishes with TOPPING options — toppings in a `Topping` option group.
-  • Dishes with required CHOICE of one variant — choices in an option group (type=0, option=1).
-  COMMON REQUIRES price_in and price_out.
-  COMMON MUST have foods = null.
-
-kind=5 (COMBO) — ONLY for COMBO BUNDLES.
-  Combo = single purchase delivering 2+ DIFFERENT named items.
-  COMBO REQUIRES foods[] with ≥2 children. Each child is kind=1.
-  COMBO MUST have price_in = null and price_out = null.
-  COMBO MAY have options (rare).
-  ⚠️ NO COMBO-INSIDE-COMBO. Combo children are always kind=1, never kind=5.
-
-When in doubt → kind=1.
+__KIND_SECTION__
 
 ============================================================
 ⚠️ FREQUENT MISTAKE — indented variants must NOT become separate foods
@@ -227,20 +205,7 @@ REQUIRED CHOICE (same price):
   → option: name="Loại thịt", type=0, option=1
     food_datas = [{name_food: "Tái", price: 0}, ...]
 
-============================================================
-COMBO BUNDLE — kind=5
-============================================================
-Triggers: "combo / set / pack / menu / deal / bundle",
-          numeric + people ("Combo 2 người"),
-          one price covering 2+ named items joined by "+" or ",".
-
-For combo bundles:
-- Set price_in = null and price_out = null.
-- Populate foods[] with each component (≥2 entries):
-    { name, type, kind: 1, price_in, price_out, options? }
-- Every child is kind=1. NEVER nest combos.
-- If menu shows individual component prices → use them.
-- If menu shows ONLY combo total → SPLIT EQUALLY across components.
+__COMBO_SECTION__
 
 ============================================================
 TYPE CLASSIFICATION
@@ -265,6 +230,108 @@ QUALITY BAR
 - Better to drop a few items than to submit one wrong price.
 - Preserve original language and casing of names — do not translate.
 - Output strictly through the `submit_menu_groups` tool. No prose."""
+
+
+# ============================================================
+# Combo-section variants (substituted into MENU_BUILD_PROMPT at runtime)
+# ============================================================
+_DATA_MODEL_WITH_COMBOS = """\
+(1) groups[]  — sections of the menu (Starters, Main, Drinks, ...).
+(2) food      — one row on the menu.
+    Fields: { name, plu?, type, kind, price_in, price_out, options[], foods? }
+    `foods` is ONLY present when kind=5 (combo); each child is kind=1.
+(3) options[] — modifier groups attached to a food.
+    Each group: { name, type, option, food_datas[] }
+    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }"""
+
+_DATA_MODEL_NO_COMBOS = """\
+(1) groups[]  — sections of the menu (Starters, Main, Drinks, ...).
+(2) food      — one row on the menu. COMBO EXTRACTION IS DISABLED — kind is always 1.
+    Fields: { name, plu?, type, kind (always 1), price_in, price_out, options[] }
+(3) options[] — modifier groups attached to a food.
+    Each group: { name, type, option, food_datas[] }
+    Each food_data: { name_food (MUST be in whitelist), price (per-food), plu?, required? }"""
+
+_KIND_WITH_COMBOS = """\
+kind=1 (COMMON) — DEFAULT for almost every menu item.
+  Use kind=1 for:
+  • Standalone dishes with one price.
+  • Dishes with SIZE variants — base = smallest size, larger sizes in a `Size` option group.
+  • Dishes with TOPPING options — toppings in a `Topping` option group.
+  • Dishes with required CHOICE of one variant — choices in an option group (type=0, option=1).
+  COMMON REQUIRES price_in and price_out.
+  COMMON MUST have foods = null.
+
+kind=5 (COMBO) — ONLY for COMBO BUNDLES.
+  Combo = single purchase delivering 2+ DIFFERENT named items.
+  COMBO REQUIRES foods[] with ≥2 children. Each child is kind=1.
+  COMBO MUST have price_in = null and price_out = null.
+  COMBO MAY have options (rare).
+  ⚠️ NO COMBO-INSIDE-COMBO. Combo children are always kind=1, never kind=5.
+
+When in doubt → kind=1."""
+
+_KIND_NO_COMBOS = """\
+kind=1 (COMMON) — THIS RUN ONLY EXTRACTS kind=1 ITEMS.
+  Use kind=1 for:
+  • Standalone dishes with one price.
+  • Dishes with SIZE variants — base = smallest size, larger sizes in a `Size` option group.
+  • Dishes with TOPPING options — toppings in a `Topping` option group.
+  • Dishes with required CHOICE of one variant — choices in an option group (type=0, option=1).
+  COMMON REQUIRES price_in and price_out.
+
+⚠️ COMBO EXTRACTION IS DISABLED IN THIS RUN.
+  If you see a combo bundle on the menu — anything labeled "combo / set / pack /
+  menu / deal / bundle", "Combo X người", or "2+ named items for one price" —
+  SKIP IT ENTIRELY. Do NOT add the combo as a food. Do NOT add its component
+  dishes as separate foods either (unless those components ALSO appear as
+  standalone dishes elsewhere on the same menu — then extract them at their
+  standalone price, not the combo-component price)."""
+
+_COMBO_SECTION_WITH = """\
+============================================================
+COMBO BUNDLE — kind=5
+============================================================
+Triggers: "combo / set / pack / menu / deal / bundle",
+          numeric + people ("Combo 2 người"),
+          one price covering 2+ named items joined by "+" or ",".
+
+For combo bundles:
+- Set price_in = null and price_out = null.
+- Populate foods[] with each component (≥2 entries):
+    { name, type, kind: 1, price_in, price_out, options? }
+- Every child is kind=1. NEVER nest combos.
+- If menu shows individual component prices → use them.
+- If menu shows ONLY combo total → SPLIT EQUALLY across components."""
+
+_COMBO_SECTION_WITHOUT = """\
+============================================================
+COMBO EXTRACTION: DISABLED
+============================================================
+This run is configured to IGNORE combo bundles. Apply this rule:
+
+If you see ANY of these on the menu, SKIP the item — do not add to groups[]:
+  • Item labeled "Combo", "Set", "Pack", "Deal", "Bundle", "Menu" (combo menu)
+  • "Combo N người" / "Set Menu"
+  • One price covering 2+ named items joined by "+" or ","
+  • "2 dishes + 1 drink = 250k" type bundles
+
+Only extract STANDALONE dishes (kind=1) and dishes with options (size/topping/etc).
+Better to under-extract than to wrongly include a combo as a regular dish."""
+
+
+def build_menu_prompt(extract_combos: bool) -> str:
+    """Return MENU_BUILD_PROMPT with combo-related sections substituted in/out.
+    Call this each run with the user's toggle state."""
+    data_model = _DATA_MODEL_WITH_COMBOS if extract_combos else _DATA_MODEL_NO_COMBOS
+    kind = _KIND_WITH_COMBOS if extract_combos else _KIND_NO_COMBOS
+    combo = _COMBO_SECTION_WITH if extract_combos else _COMBO_SECTION_WITHOUT
+    return (
+        MENU_BUILD_PROMPT
+        .replace("__DATA_MODEL_SECTION__", data_model)
+        .replace("__KIND_SECTION__", kind)
+        .replace("__COMBO_SECTION__", combo)
+    )
 
 
 # ============================================================
