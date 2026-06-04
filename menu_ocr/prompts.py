@@ -71,9 +71,22 @@ EXAMPLES of patterns where children ARE modifiers (DO list):
     Phở (tái / nạm / gân) — 70k        ← parent has price 70k
     → DO list: "Tái" (base_price 0), "Nạm" (0), "Gân" (0).
 
-  Pattern D — Size with base price visible:
+  Pattern D — Size with base price visible (same-row inline):
     Trà sữa  S 40k | M 50k | L 60k     ← base = S 40k
     → DO list: "Size M" (base_price 10), "Size L" (base_price 20).
+
+  Pattern D2 — Size-table inline PER ROW (common in EU/German drink menus):
+    Cola        0,33l  2,00€   liter  2,80€
+    Cola Light  0,33l  2,00€   liter  2,80€
+    Fritz       0,33l  2,20€              ← only 1 size — skip beilage
+    Capri Sun           1,00€              ← no size label — skip beilage
+
+    Each row has up to 2 (size-label + price) pairs side-by-side. The SMALLER
+    size ('0,33l') is the BASE — do NOT add to FC. The LARGER size ('liter',
+    '1L', 'Krug', 'groß', '0,5l' — whatever the menu calls it) IS a modifier:
+    → DO list: {name: "Liter", base_price: 0.80}   ← differential = 2.80 - 2.00
+    Note: copy the exact label printed on the menu (lowercase 'liter',
+    or '1L', etc.). Just normalize casing consistently.
 
   Pattern E — Explicit add-ons:
     Phở bò 70k. Thêm trứng +5k, thêm hành +3k
@@ -231,7 +244,7 @@ EXAMPLES — CHOOSE parent + sub-foods (header NO price)
 EXAMPLES — kind=1 + beilage (header HAS price)
 ============================================================
 
-PATTERN: SIZE — header has base price
+PATTERN: SIZE — header has base price (variant A: same-row inline)
   Trà sữa  S 40k | M 50k | L 60k
   → name="Trà sữa", kind=1, price_in=price_out=40 (base = S, smallest size)
     options=[{
@@ -241,6 +254,29 @@ PATTERN: SIZE — header has base price
         {name_food:"Size L", price:20},
       ]
     }]
+
+PATTERN: SIZE TABLE inline per row (variant B: EU/German drinks menus)
+  Each row has UP TO 2 (size-label + price) pairs side-by-side.
+  Menu:
+    Cola        0,33l  2,00€   liter  2,80€
+    Cola Light  0,33l  2,00€   liter  2,80€
+    Fritz       0,33l  2,20€              ← only 1 size pair — NO beilage
+    Capri Sun           1,00€              ← no size label    — NO beilage
+
+  → For each row with 2 (size+price) pairs (Cola, Cola Light, Cola Zero, …):
+      kind=1, price_in=price_out = BASE price (2.00 for the 0,33l column)
+      options=[{
+        name:"Size", type:0, option:0,
+        food_datas=[
+          {name_food:"Liter", price:0.80}   ← DIFFERENTIAL = larger − base = 2.80 − 2.00
+        ]
+      }]
+  → For each row with 1 (size+price) pair (Fritz, Capri Sun, Multi, Still Water,
+    Ayran, Ayran Mango):
+      kind=1, price_in=price_out = that price, NO Size beilage.
+  → food_conditions: {name:"Liter", base_price:0.80}  (single entry, dedup'd)
+  ⚠️ NOTE: 0,33l (the smaller / base) is NEVER added to food_conditions or
+  as a food_data — it's the implicit base captured by `price_in`.
 
 PATTERN: TOPPING — header has price (multi-select add-on)
   Trà sữa 40k + Topping: Trân châu +5k, Thạch +5k, Pudding +8k
